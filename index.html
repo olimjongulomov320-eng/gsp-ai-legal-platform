@@ -2543,7 +2543,22 @@
     <div class="modal-actions" style="margin-top:16px;">
       <button class="btn btn-ghost" onclick="closeModal('viewCase')">Закрыть</button>
       <button class="btn btn-ghost" onclick="askAIAboutCase()">✦ Спросить AI</button>
+      <button class="btn btn-ghost" style="color:var(--gold);border-color:var(--gold);" onclick="runQuickCasePipeline(currentCaseId)">◆ Обработать дело AI</button>
       <button class="btn btn-primary" onclick="saveCaseEdits()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- PIPELINE REPORT MODAL -->
+<div class="modal-overlay" id="modal-pipelineReport">
+  <div class="modal" style="width:620px;max-height:85vh;overflow-y:auto;">
+    <div class="modal-title" id="pipeline-report-title">Отчёт AI по делу</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px;padding:8px 10px;background:var(--surface2);border-radius:6px;border-left:2px solid var(--gold);">Черновик анализа — требует проверки юриста перед использованием.</div>
+    <div id="pipeline-report-body" style="font-size:13px;line-height:1.7;white-space:pre-line;color:var(--text);"></div>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn btn-ghost" onclick="closeModal('pipelineReport')">Закрыть</button>
+      <button class="btn btn-ghost" id="pipeline-report-download-btn" onclick="downloadPipelineReport()">Скачать отчёт</button>
+      <button class="btn btn-primary" id="pipeline-report-apply-btn" onclick="applyPipelineSuggestions()" style="display:none;">Применить предложения</button>
     </div>
   </div>
 </div>
@@ -2677,6 +2692,7 @@ function ensureGroqKey() {
 // =====================
 let cases = [
   { id: 1, number: 'А-2025-118', client: 'ООО «СтройИнвест»', type: 'Апелляция', status: 'appeal', amount: '1 200 000 000', deadline: '2026-09-10', priority: 'high', desc: 'Апелляция по коммерческому спору. Решение суда первой инстанции оспаривается.',
+    satStep: 6, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Подготовить апелляционную жалобу', type: 'doc', done: false, date: '2026-09-07' },
       { id: 2, text: 'Заседание в апелляционном суде', type: 'court', done: false, date: '2026-09-10' },
@@ -2684,29 +2700,34 @@ let cases = [
     ]
   },
   { id: 2, number: 'М-2026-034', client: 'Al-Faris Trading LLC', type: 'Международная торговля', status: 'court', amount: '450 000 USD', deadline: '2026-09-22', priority: 'high', desc: 'Спор по поставке дефектного оборудования из Саудовской Аравии. CISG.',
+    satStep: 5, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Перевод контракта на русский (CISG)', type: 'doc', done: true, date: '2026-09-01' },
       { id: 2, text: 'Судебное заседание — предварительное слушание', type: 'court', done: false, date: '2026-09-22' },
     ]
   },
   { id: 3, number: 'К-2026-091', client: 'Образовательный центр "Знание"', type: 'Корпоративный конфликт', status: 'active', amount: '850 000 000', deadline: '2026-10-15', priority: 'mid', desc: 'Конфликт между партнёрами образовательного учреждения.',
+    satStep: 3, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Запросить устав и протоколы собраний', type: 'doc', done: false, date: '2026-09-08' },
       { id: 2, text: 'Медиация между партнёрами', type: 'call', done: false, date: '2026-09-15' },
     ]
   },
   { id: 4, number: 'В-2026-007', client: 'ИП Хасанов Р.М.', type: 'Взыскание долга', status: 'active', amount: '95 000 000', deadline: '2026-09-30', priority: 'mid', desc: 'Взыскание задолженности по договору подряда.',
+    satStep: 3, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Направить досудебную претензию', type: 'urgent', done: true, date: '2026-08-20' },
       { id: 2, text: 'Подать исковое заявление в суд', type: 'doc', done: false, date: '2026-09-25' },
     ]
   },
   { id: 5, number: 'Т-2026-055', client: 'АО «УзТекстиль»', type: 'Трудовой спор', status: 'new', amount: '12 000 000', deadline: '2026-11-01', priority: 'low', desc: 'Трудовой спор по незаконному увольнению.',
+    satStep: 1, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Получить трудовую книжку и приказ', type: 'doc', done: false, date: '2026-09-10' },
     ]
   },
   { id: 6, number: 'С-2025-209', client: 'ООО «МегаТорг»', type: 'Коммерческий спор', status: 'closed', amount: '320 000 000', deadline: '2026-05-15', priority: 'low', desc: 'Дело закрыто. Мировое соглашение.',
+    satStep: 7, satType: 'corporate', documents: [],
     tasks: [
       { id: 1, text: 'Подписать мировое соглашение', type: 'doc', done: true, date: '2026-05-10' },
       { id: 2, text: 'Архивировать материалы дела', type: 'other', done: true, date: '2026-05-15' },
@@ -3320,17 +3341,21 @@ function addCase() {
     return;
   }
 
+  const type = document.getElementById('new-type').value;
   const c = {
     id: nextId++,
     number: number,
     client: client,
-    type: document.getElementById('new-type').value,
+    type: type,
     status: document.getElementById('new-status').value,
     amount: document.getElementById('new-amount').value,
     deadline: document.getElementById('new-deadline').value,
     priority: document.getElementById('new-priority').value,
     desc: document.getElementById('new-desc').value,
     tasks: [],
+    documents: [],
+    satStep: 1,
+    satType: type === 'Уголовное дело' ? 'criminal' : 'corporate',
   };
   cases.unshift(c);
   ['new-number','new-client','new-amount','new-deadline','new-desc'].forEach(id => document.getElementById(id).value = '');
@@ -3358,9 +3383,11 @@ function openCase(id) {
   const c = cases.find(x => x.id === id);
   if (!c) return;
   currentCaseId = id;
-  // Ensure tasks/documents arrays exist
+  // Ensure tasks/documents arrays exist, and a real per-case SAT step (not guessed from status)
   if (!c.tasks) c.tasks = [];
   if (!c.documents) c.documents = [];
+  if (!c.satStep) c.satStep = 1;
+  if (!c.satType) c.satType = c.type === 'Уголовное дело' ? 'criminal' : 'corporate';
 
   document.getElementById('view-title').textContent = c.number;
   document.getElementById('view-client').value = c.client;
@@ -3418,6 +3445,137 @@ function deleteCase() {
   closeModal('viewCase');
   renderDashboard(); renderCases(); renderKanban(); populateMovieSelect();
   notify('Дело удалено', c.number);
+}
+
+// =====================
+// AI CASE PIPELINE — quick mode (1 call): audit + strategy + SAT suggestion + tasks
+// =====================
+let pipelineLastResult = null; // { caseId, rawText, suggestedSatStep, suggestedStatus, tasks: [{text,type}] }
+
+function buildQuickPipelinePrompt(c) {
+  const tasksSummary = (c.tasks||[]).length
+    ? c.tasks.map(t=>(t.done?'✓':'○')+' '+t.text).join('; ')
+    : 'нет задач';
+  const docsSummary = (c.documents||[]).length
+    ? c.documents.map(d => `[${d.name}]\n${d.text}`).join('\n\n')
+    : 'документы не загружены';
+  const satSteps = c.satType === 'criminal' ? satCriminalSteps : satCorporateSteps;
+  const satStepsList = satSteps.map(s => `${s.num}. ${s.title}`).join('\n');
+
+  return `Обработай дело как AI-юрист GSP: проведи краткий полный разбор и предложи следующий шаг.
+
+ДЕЛО: №${c.number}, Клиент: ${c.client}, Тип: ${c.type}, Статус: ${c.status}, Сумма: ${c.amount||'—'}, Дедлайн: ${c.deadline||'—'}
+Описание: ${c.desc||'—'}
+Текущие задачи: ${tasksSummary}
+Текущий этап SAT: ${c.satStep||1} из 7
+
+ДОКУМЕНТЫ ПО ДЕЛУ:
+${docsSummary}
+
+7 ЭТАПОВ SAT (${c.satType === 'criminal' ? 'уголовное' : 'корпоративное'} дело):
+${satStepsList}
+
+Структурируй ответ ТОЧНО в таком формате (заголовки заглавными, каждый раздел с новой строки):
+
+АНАЛИЗ:
+[краткий разбор фактов дела и документов, 3-5 предложений]
+
+СТРАТЕГИЯ:
+[рекомендуемая стратегия и 1-2 альтернативы, 3-5 предложений]
+
+РИСКИ:
+[ключевые риски по делу, список через дефис]
+
+ЭТАП SAT: [номер от 1 до 7 — на каком этапе дело находится СЕЙЧАС по факту]
+
+ЗАДАЧИ:
+- [конкретная задача 1]
+- [конкретная задача 2]
+(2-4 конкретные следующие задачи, без нумерации, каждая с новой строки через дефис)
+
+Отвечай на русском, по делу, без воды.`;
+}
+
+function parsePipelineResult(text) {
+  const satMatch = text.match(/ЭТАП SAT:\s*(\d)/i);
+  const suggestedSatStep = satMatch ? Math.min(7, Math.max(1, parseInt(satMatch[1]))) : null;
+
+  const tasksBlockMatch = text.match(/ЗАДАЧИ:\s*([\s\S]*?)(?:\n\n|$)/i);
+  const tasks = [];
+  if (tasksBlockMatch) {
+    tasksBlockMatch[1].split('\n').forEach(line => {
+      const m = line.match(/^\s*[-•]\s*(.+)/);
+      if (m && m[1].trim()) tasks.push({ text: m[1].trim(), type: 'doc' });
+    });
+  }
+
+  return { rawText: text, suggestedSatStep, tasks };
+}
+
+async function runQuickCasePipeline(caseId) {
+  const c = cases.find(x => x.id === caseId);
+  if (!c) return;
+  if (!ensureGroqKey()) return;
+
+  closeModal('viewCase');
+  const title = document.getElementById('pipeline-report-title');
+  const body = document.getElementById('pipeline-report-body');
+  const applyBtn = document.getElementById('pipeline-report-apply-btn');
+  title.textContent = `Отчёт AI · ${c.number} — ${c.client}`;
+  applyBtn.style.display = 'none';
+  body.innerHTML = '<div class="typing-indicator" style="padding:20px 0;"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+  openModal('pipelineReport');
+
+  try {
+    const systemPrompt = harveyBuildSystemPrompt('pm');
+    const result = await callGroq([{ role: 'user', content: buildQuickPipelinePrompt(c) }], systemPrompt, 1500);
+    const parsed = parsePipelineResult(result);
+    pipelineLastResult = { caseId: c.id, ...parsed };
+
+    body.textContent = result;
+    if (parsed.suggestedSatStep || parsed.tasks.length) {
+      applyBtn.style.display = '';
+      let applyLabel = 'Применить: ';
+      const parts = [];
+      if (parsed.suggestedSatStep && parsed.suggestedSatStep !== c.satStep) parts.push(`этап SAT → ${parsed.suggestedSatStep}`);
+      if (parsed.tasks.length) parts.push(`${parsed.tasks.length} задач${parsed.tasks.length === 1 ? 'а' : 'и'}`);
+      applyBtn.textContent = applyLabel + parts.join(', ');
+    }
+    notify('✓ Отчёт готов', `Дело ${c.number} обработано AI`);
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--red);">Ошибка: ${e.message}</div>`;
+    pipelineLastResult = null;
+  }
+}
+
+function applyPipelineSuggestions() {
+  if (!pipelineLastResult) return;
+  const c = cases.find(x => x.id === pipelineLastResult.caseId);
+  if (!c) return;
+
+  if (pipelineLastResult.suggestedSatStep) {
+    c.satStep = pipelineLastResult.suggestedSatStep;
+  }
+  if (!c.tasks) c.tasks = [];
+  pipelineLastResult.tasks.forEach(t => {
+    c.tasks.push({ id: nextTaskId++, text: t.text, type: t.type, done: false, date: new Date().toISOString().slice(0,10) });
+  });
+  c.desc = (c.desc || '') + `\n\n[AI-обработка ${new Date().toLocaleDateString('ru-RU')}]: этап SAT ${c.satStep}/7, добавлено задач: ${pipelineLastResult.tasks.length}`;
+
+  renderCases(); renderKanban(); renderDashboard();
+  closeModal('pipelineReport');
+  notify('✓ Применено', `Этап SAT и задачи обновлены для ${c.number}`);
+}
+
+function downloadPipelineReport() {
+  if (!pipelineLastResult) { notify('△ Нет отчёта', 'Сначала обработайте дело'); return; }
+  const c = cases.find(x => x.id === pipelineLastResult.caseId);
+  const blob = new Blob([pipelineLastResult.rawText], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `GSP_Отчёт_${c ? c.number : 'дело'}.txt`; a.click();
+  URL.revokeObjectURL(url);
+  notify('✓ Скачано', 'Отчёт сохранён как TXT файл');
 }
 
 function askAIAboutCase() {
@@ -4202,6 +4360,9 @@ function executeAIAction(cmd) {
         deadline: d.deadline || '',
         desc:     d.desc     || '',
         tasks:    [],
+        documents: [],
+        satStep:  1,
+        satType:  (d.type === 'Уголовное дело') ? 'criminal' : 'corporate',
       };
       cases.unshift(newCase);
       return { icon: '✓', text: `Дело добавлено: ${newCase.number} — ${newCase.client}`, color: 'var(--green)', caseId: newCase.id };
@@ -5261,9 +5422,8 @@ function harveyRenderSATCompliance() {
   const activeCases = cases.filter(c => c.status !== 'closed');
   if (!activeCases.length) { container.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px;">Нет активных дел</div>'; return; }
 
-  const statusMap = { new: 1, active: 2, court: 5, appeal: 6, closed: 7 };
   container.innerHTML = activeCases.map(c => {
-    const stage = statusMap[c.status] || 2;
+    const stage = c.satStep || 1;
     const pct = Math.round((stage / 7) * 100);
     const cls = pct >= 70 ? 'ok' : pct >= 40 ? 'warn' : 'late';
     const stageName = ['', 'Анализ', 'В работе', 'Претензия', 'Подготовка', 'Суд', 'Апелляция', 'Исполнение'][stage] || '—';
@@ -5376,8 +5536,7 @@ function docgenRenderSAT(type) {
   const steps = type === 'criminal' ? satCriminalSteps : satCorporateSteps;
   const caseId = parseInt(document.getElementById('docgen-case')?.value);
   const c = cases.find(x => x.id === caseId);
-  const doneTasks = c ? (c.tasks || []).filter(t => t.done).length : 0;
-  const activeStep = c ? Math.min(Math.floor(doneTasks / 1.5) + 1, 7) : 0;
+  const activeStep = c ? (c.satStep || 1) : 0;
 
   const container = document.getElementById('sat-checklist-content');
   if (!container) return;
