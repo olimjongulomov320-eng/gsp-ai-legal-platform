@@ -2625,8 +2625,8 @@ const AI_PROVIDERS = {
   },
 };
 
-let AI_PROVIDER = localStorage.getItem('lexai_ai_provider') || 'groq';
-if (!AI_PROVIDERS[AI_PROVIDER]) AI_PROVIDER = 'groq';
+let AI_PROVIDER = localStorage.getItem('lexai_ai_provider') || 'openrouter';
+if (!AI_PROVIDERS[AI_PROVIDER]) AI_PROVIDER = 'openrouter';
 
 // AI_KEYS holds one key per provider so switching providers doesn't lose the others
 let AI_KEYS = JSON.parse(localStorage.getItem('lexai_ai_keys') || '{}');
