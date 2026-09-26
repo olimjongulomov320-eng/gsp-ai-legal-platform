@@ -1933,7 +1933,14 @@
             </div>
 
             <!-- Input -->
+            <div id="harvey-attachment-preview" style="display:none;align-items:center;gap:8px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px 8px 0 0;border-bottom:none;font-size:12px;">
+              <span style="color:var(--gold);">▤</span>
+              <span id="harvey-attachment-name" style="flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+              <button onclick="clearHarveyAttachment()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;" title="Убрать файл">✕</button>
+            </div>
             <div class="ai-input-area" style="border-radius:0 0 12px 12px;">
+              <input type="file" id="harvey-file-input" accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,.webp" style="display:none;" onchange="handleHarveyFileSelect(this.files[0])">
+              <button class="btn btn-ghost" style="padding:0 12px;" onclick="document.getElementById('harvey-file-input').click()" title="Прикрепить документ (PDF, DOCX, TXT, фото/скан)"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;"><path d="M17 7v9a3 3 0 0 1-6 0V6a2 2 0 0 1 4 0v9a1 1 0 0 1-2 0V8"/></svg></button>
               <input class="ai-input" id="harvey-input" placeholder="Задайте вопрос Harvey или дайте команду агенту..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();harveySend()}">
               <button class="ai-send" onclick="harveySend()">→</button>
             </div>
@@ -5045,14 +5052,49 @@ function harveyQuickCmd(cmd) {
   harveySend();
 }
 
+let harveyPendingAttachment = null; // { name, text }
+
+async function handleHarveyFileSelect(file) {
+  if (!file) return;
+  const preview = document.getElementById('harvey-attachment-preview');
+  const nameEl = document.getElementById('harvey-attachment-name');
+  nameEl.textContent = `Читаю «${file.name}»…`;
+  preview.style.display = 'flex';
+  try {
+    harveyPendingAttachment = await extractFileText(file, (status) => { nameEl.textContent = status; });
+    nameEl.textContent = `${harveyPendingAttachment.name} (${harveyPendingAttachment.text.length.toLocaleString('ru-RU')} симв.)`;
+    document.getElementById('harvey-input').focus();
+  } catch (e) {
+    notify('△ Не удалось прочитать файл', e.message);
+    clearHarveyAttachment();
+  } finally {
+    document.getElementById('harvey-file-input').value = '';
+  }
+}
+
+function clearHarveyAttachment() {
+  harveyPendingAttachment = null;
+  document.getElementById('harvey-attachment-preview').style.display = 'none';
+}
+
 async function harveySend() {
   if (!ensureGroqKey()) return;
   const input = document.getElementById('harvey-input');
   const text = input?.value?.trim();
-  if (!text) return;
+  const attachment = harveyPendingAttachment;
+  if (!text && !attachment) return;
 
   input.value = '';
-  harveyAddMessage('user', text);
+  clearHarveyAttachment();
+
+  const displayText = attachment
+    ? `${text || 'Проанализируй документ'}\n\n[Прикреплён файл: ${attachment.name}]`
+    : text;
+  const modelText = attachment
+    ? `${text || 'Проанализируй этот документ и дай юридическую оценку.'}\n\n--- ДОКУМЕНТ: ${attachment.name} ---\n${attachment.text}\n--- КОНЕЦ ДОКУМЕНТА ---`
+    : text;
+
+  harveyAddMessage('user', displayText);
 
   // Set agent thinking state
   if (harveyActiveAgent) {
@@ -5072,11 +5114,11 @@ async function harveySend() {
   chat.appendChild(typingDiv);
   chat.scrollTop = chat.scrollHeight;
 
-  harveyChatHistory.push({ role: 'user', content: text });
+  harveyChatHistory.push({ role: 'user', content: modelText });
 
   try {
     const systemPrompt = harveyBuildSystemPrompt(harveyActiveAgent || 'general');
-    const result = await callGroq(harveyChatHistory, systemPrompt, 1200);
+    const result = await callGroq(harveyChatHistory, systemPrompt, attachment ? 2000 : 1200);
     harveyChatHistory.push({ role: 'assistant', content: result });
 
     document.getElementById(typingId)?.remove();
