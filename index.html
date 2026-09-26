@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/7.0.0/tesseract.min.js"></script>
 <style>
   :root {
     --bg: #0a0c10;
@@ -1681,8 +1682,8 @@
             <button onclick="clearAIAttachment()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;" title="Убрать файл">✕</button>
           </div>
           <div class="ai-input-area">
-            <input type="file" id="ai-file-input" accept=".pdf,.docx,.txt" style="display:none;" onchange="handleAIFileSelect(this.files[0])">
-            <button class="btn btn-ghost" style="padding:0 12px;" onclick="document.getElementById('ai-file-input').click()" title="Прикрепить документ (PDF, DOCX, TXT)"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;"><path d="M17 7v9a3 3 0 0 1-6 0V6a2 2 0 0 1 4 0v9a1 1 0 0 1-2 0V8"/></svg></button>
+            <input type="file" id="ai-file-input" accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,.webp" style="display:none;" onchange="handleAIFileSelect(this.files[0])">
+            <button class="btn btn-ghost" style="padding:0 12px;" onclick="document.getElementById('ai-file-input').click()" title="Прикрепить документ (PDF, DOCX, TXT, фото/скан)"><svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;"><path d="M17 7v9a3 3 0 0 1-6 0V6a2 2 0 0 1 4 0v9a1 1 0 0 1-2 0V8"/></svg></button>
             <input class="ai-input" id="ai-input" placeholder='Например: "добавь задачу в дело А-2025-118" или "переведи дело в суд"...' onkeydown="if(event.key==='Enter')sendAI()">
             <button class="ai-send" onclick="sendAI()">➤</button>
           </div>
@@ -2525,7 +2526,7 @@
           Документы по делу <span id="case-docs-count" style="color:var(--gold);margin-left:4px;"></span>
         </div>
         <div>
-          <input type="file" id="case-file-input" accept=".pdf,.docx,.txt" style="display:none;" onchange="handleCaseFileSelect(this.files[0])">
+          <input type="file" id="case-file-input" accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,.webp" style="display:none;" onchange="handleCaseFileSelect(this.files[0])">
           <button class="btn btn-ghost" style="padding:5px 12px;font-size:11px;" onclick="document.getElementById('case-file-input').click()">+ Загрузить файл</button>
         </div>
       </div>
@@ -3561,7 +3562,7 @@ async function handleCaseFileSelect(file) {
   if (btn) { btn.textContent = 'Читаю файл…'; btn.disabled = true; }
 
   try {
-    const { name, text } = await extractFileText(file);
+    const { name, text } = await extractFileText(file, (status) => { if (btn) btn.textContent = status; });
     c.documents.push({ id: nextDocId++, name, text, addedAt: new Date().toISOString().slice(0,10) });
     renderCaseDocs();
     notify('✓ Документ загружен', name);
@@ -3782,20 +3783,47 @@ function filterByPriority(pKey) {
 }
 
 // =====================
-// FILE TEXT EXTRACTION — PDF / DOCX / TXT
+// FILE TEXT EXTRACTION — PDF / DOCX / TXT / images, with OCR fallback for scans
 // =====================
 if (typeof pdfjsLib !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 }
 
 const MAX_DOC_CHARS = 20000; // keep extracted text within a sane prompt budget
+const MAX_OCR_PAGES = 15; // OCR is slow — cap how many pages we run it on
 
 function truncateDocText(text) {
   if (text.length <= MAX_DOC_CHARS) return text;
   return text.slice(0, MAX_DOC_CHARS) + `\n\n[...текст обрезан, показаны первые ${MAX_DOC_CHARS} символов из ${text.length}]`;
 }
 
-async function extractPdfText(arrayBuffer) {
+let tesseractWorkerPromise = null;
+function getTesseractWorker() {
+  if (!tesseractWorkerPromise) {
+    if (typeof Tesseract === 'undefined') throw new Error('OCR-библиотека не загрузилась (нет соединения с интернетом?)');
+    tesseractWorkerPromise = Tesseract.createWorker('rus+eng');
+  }
+  return tesseractWorkerPromise;
+}
+
+async function ocrCanvas(canvas, onProgress) {
+  const worker = await getTesseractWorker();
+  const { data } = await worker.recognize(canvas);
+  if (onProgress) onProgress();
+  return (data.text || '').trim();
+}
+
+// Renders a PDF page to a canvas at a resolution that keeps OCR accurate without being too slow
+async function renderPdfPageToCanvas(page) {
+  const viewport = page.getViewport({ scale: 2 });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return canvas;
+}
+
+async function extractPdfText(arrayBuffer, onStatus) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let text = '';
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -3804,7 +3832,23 @@ async function extractPdfText(arrayBuffer) {
     text += content.items.map(it => it.str).join(' ') + '\n\n';
     if (text.length > MAX_DOC_CHARS) break; // avoid parsing huge PDFs fully
   }
-  return text.trim();
+  text = text.trim();
+  if (text) return text; // has a real text layer — no need for OCR
+
+  // No text layer found — this is a scanned/photographed PDF. Fall back to OCR page by page.
+  const pageCount = Math.min(pdf.numPages, MAX_OCR_PAGES);
+  let ocrText = '';
+  for (let i = 1; i <= pageCount; i++) {
+    if (onStatus) onStatus(`Распознаю текст со скана — страница ${i} из ${pageCount}…`);
+    const page = await pdf.getPage(i);
+    const canvas = await renderPdfPageToCanvas(page);
+    ocrText += (await ocrCanvas(canvas)) + '\n\n';
+    if (ocrText.length > MAX_DOC_CHARS) break;
+  }
+  if (pdf.numPages > MAX_OCR_PAGES) {
+    ocrText += `\n[OCR применён только к первым ${MAX_OCR_PAGES} страницам из ${pdf.numPages}]`;
+  }
+  return ocrText.trim();
 }
 
 async function extractDocxText(arrayBuffer) {
@@ -3812,25 +3856,41 @@ async function extractDocxText(arrayBuffer) {
   return (result.value || '').trim();
 }
 
-async function extractFileText(file) {
+async function extractImageText(file, onStatus) {
+  if (onStatus) onStatus('Распознаю текст на изображении…');
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  return await ocrCanvas(canvas);
+}
+
+const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'bmp'];
+
+async function extractFileText(file, onStatus) {
   const name = file.name || 'документ';
   const ext = name.split('.').pop().toLowerCase();
-  const buf = await file.arrayBuffer();
 
   let text = '';
   if (ext === 'pdf') {
     if (typeof pdfjsLib === 'undefined') throw new Error('PDF-библиотека не загрузилась (нет соединения с интернетом?)');
-    text = await extractPdfText(buf);
+    const buf = await file.arrayBuffer();
+    text = await extractPdfText(buf, onStatus);
   } else if (ext === 'docx') {
     if (typeof mammoth === 'undefined') throw new Error('DOCX-библиотека не загрузилась (нет соединения с интернетом?)');
+    const buf = await file.arrayBuffer();
     text = await extractDocxText(buf);
   } else if (ext === 'txt') {
+    const buf = await file.arrayBuffer();
     text = new TextDecoder('utf-8').decode(buf);
+  } else if (IMAGE_EXTENSIONS.includes(ext)) {
+    text = await extractImageText(file, onStatus);
   } else {
-    throw new Error(`Формат .${ext} не поддерживается. Загрузите PDF, DOCX или TXT.`);
+    throw new Error(`Формат .${ext} не поддерживается. Загрузите PDF, DOCX, TXT или изображение (JPG/PNG).`);
   }
 
-  if (!text.trim()) throw new Error('Не удалось извлечь текст из файла — возможно, это скан без текстового слоя.');
+  if (!text.trim()) throw new Error('Не удалось распознать текст в файле — изображение слишком низкого качества или текста в нём нет.');
   return { name, text: truncateDocText(text.trim()) };
 }
 
@@ -3973,7 +4033,7 @@ async function handleAIFileSelect(file) {
   nameEl.textContent = `Читаю «${file.name}»…`;
   preview.style.display = 'flex';
   try {
-    aiPendingAttachment = await extractFileText(file);
+    aiPendingAttachment = await extractFileText(file, (status) => { nameEl.textContent = status; });
     nameEl.textContent = `${aiPendingAttachment.name} (${aiPendingAttachment.text.length.toLocaleString('ru-RU')} симв.)`;
     document.getElementById('ai-input').focus();
   } catch (e) {
